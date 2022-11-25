@@ -11,6 +11,7 @@ import de.erdbeerbaerlp.dcintegration.common.storage.PlayerLinkController;
 import de.erdbeerbaerlp.dcintegration.common.util.*;
 import de.erdbeerbaerlp.dcintegration.forge.api.ForgeDiscordEventHandler;
 import de.erdbeerbaerlp.dcintegration.forge.command.McCommandDiscord;
+import de.erdbeerbaerlp.dcintegration.forge.config.NotificationConfiguration;
 import de.erdbeerbaerlp.dcintegration.forge.util.ForgeMessageUtils;
 import de.erdbeerbaerlp.dcintegration.forge.util.ForgeServerInterface;
 import net.dv8tion.jda.api.entities.Guild;
@@ -72,6 +73,7 @@ public class DiscordIntegration {
         ModLoadingContext.get().registerExtensionPoint(IExtensionPoint.DisplayTest.class, () -> new IExtensionPoint.DisplayTest(() -> NetworkConstants.IGNORESERVERONLY, (a, b) -> true));
         try {
             Discord.loadConfigs();
+            NotificationConfiguration.loadConfig();
             if (FMLEnvironment.dist == Dist.CLIENT) {
                 LOGGER.error("This mod cannot be used client-side");
             } else {
@@ -108,8 +110,9 @@ public class DiscordIntegration {
                 Thread.sleep(2000); //Wait for it to cache the channels
                 if (!Localization.instance().serverStarting.isEmpty()) {
                     CommandRegistry.registerDefaultCommandsFromConfig();
-                    if (discord_instance.getChannel() != null)
+                    if (notifications().serverStarting && discord_instance.getChannel() != null) {
                         Variables.startingMsg = discord_instance.sendMessageReturns(Localization.instance().serverStarting, discord_instance.getChannel(Configuration.instance().advanced.serverChannelID));
+                    }
                 }
             }
         } catch (InterruptedException | NullPointerException ignored) {
@@ -119,20 +122,30 @@ public class DiscordIntegration {
     @SubscribeEvent
     public void playerJoin(final PlayerEvent.PlayerLoggedInEvent ev) {
         if (discord_instance != null) {
-            if (PlayerLinkController.getSettings(null, ev.getEntity().getUUID()).hideFromDiscord) return;
-            discord_instance.sendMessage(Localization.instance().playerJoin.replace("%player%", ForgeMessageUtils.formatPlayerName(ev.getEntity())));
+            if (PlayerLinkController.getSettings(null, ev.getEntity().getUUID()).hideFromDiscord) {
+                return;
+            }
+
+            if (notifications().playerJoin) {
+                discord_instance.sendMessage(Localization.instance().playerJoin.replace("%player%", ForgeMessageUtils.formatPlayerName(ev.getEntity())));
+            }
 
             // Fix link status (if user does not have role, give the role to the user, or vice versa)
             final Thread fixLinkStatus = new Thread(() -> {
-                if (Configuration.instance().linking.linkedRoleID.equals("0")) return;
+                if (Configuration.instance().linking.linkedRoleID.equals("0")) {
+                    return;
+                }
                 final UUID uuid = ev.getEntity().getUUID();
-                if (!PlayerLinkController.isPlayerLinked(uuid)) return;
+                if (!PlayerLinkController.isPlayerLinked(uuid)) {
+                    return;
+                }
                 final Guild guild = discord_instance.getChannel().getGuild();
                 final Role linkedRole = guild.getRoleById(Configuration.instance().linking.linkedRoleID);
                 if (PlayerLinkController.isPlayerLinked(uuid)) {
                     final Member member = guild.retrieveMemberById(PlayerLinkController.getDiscordFromPlayer(uuid)).complete();
-                    if (!member.getRoles().contains(linkedRole))
+                    if (!member.getRoles().contains(linkedRole)) {
                         guild.addRoleToMember(member, linkedRole).queue();
+                    }
                 }
             });
             fixLinkStatus.setDaemon(true);
@@ -140,12 +153,13 @@ public class DiscordIntegration {
         }
     }
 
-    @SuppressWarnings({"ConstantConditions", "deprecation"})
+    @SuppressWarnings({ "ConstantConditions", "deprecation" })
     @SubscribeEvent
     public void advancement(AdvancementEvent.AdvancementEarnEvent ev) {
-
-        if (discord_instance != null) {
-            if (PlayerLinkController.getSettings(null, ev.getEntity().getUUID()).hideFromDiscord) return;
+        if (discord_instance != null && notifications().playerAdvancement) {
+            if (PlayerLinkController.getSettings(null, ev.getEntity().getUUID()).hideFromDiscord) {
+                return;
+            }
             if (ev.getEntity().getServer().getPlayerList().getPlayerAdvancements((ServerPlayer) ev.getEntity()).getOrStartProgress(ev.getAdvancement()).isDone())
                 if (discord_instance != null && ev.getAdvancement() != null && ev.getAdvancement().getDisplay() != null && ev.getAdvancement().getDisplay().shouldAnnounceChat())
                     discord_instance.sendMessage(Localization.instance().advancementMessage.replace("%player%",
@@ -175,9 +189,13 @@ public class DiscordIntegration {
         LOGGER.info("Started");
         Variables.started = new Date().getTime();
         if (discord_instance != null) {
-            if (Variables.startingMsg != null) {
-                Variables.startingMsg.thenAccept((a) -> a.editMessage(Localization.instance().serverStarted).queue());
-            } else discord_instance.sendMessage(Localization.instance().serverStarted);
+            if (notifications().serverStarted) {
+                if (Variables.startingMsg != null) {
+                    Variables.startingMsg.thenAccept((a) -> a.editMessage(Localization.instance().serverStarted).queue());
+                } else {
+                    discord_instance.sendMessage(Localization.instance().serverStarted);
+                }
+            }
             discord_instance.startThreads();
             if (ModList.get().getModContainerById("dynmap").isPresent()) {
                 new DynmapListener().register();
@@ -247,10 +265,12 @@ public class DiscordIntegration {
 
     @SubscribeEvent
     public void chat(ServerChatEvent ev) {
-        if (discord_instance != null) {
+        if (discord_instance != null && notifications().inGameChatMessage) {
             final ServerPlayer player = ev.getPlayer();
             if (player != null) {
-                if (PlayerLinkController.getSettings(null, player.getUUID()).hideFromDiscord) return;
+                if (PlayerLinkController.getSettings(null, player.getUUID()).hideFromDiscord) {
+                    return;
+                }
             }
 
             final net.minecraft.network.chat.Component msg = ev.getMessage();
@@ -281,8 +301,10 @@ public class DiscordIntegration {
     @SuppressWarnings("ConstantConditions")
     @SubscribeEvent
     public void death(LivingDeathEvent ev) {
-        if (discord_instance != null) {
-            if (PlayerLinkController.getSettings(null, ev.getEntity().getUUID()).hideFromDiscord) return;
+        if (discord_instance != null && notifications().playerDeath) {
+            if (PlayerLinkController.getSettings(null, ev.getEntity().getUUID()).hideFromDiscord) {
+                return;
+            }
             if (ev.getEntity() instanceof Player || (ev.getEntity() instanceof TamableAnimal && ((TamableAnimal) ev.getEntity()).getOwner() instanceof Player && Configuration.instance().messages.sendDeathMessagesForTamedAnimals)) {
                 final net.minecraft.network.chat.Component deathMessage = ev.getSource().getLocalizedDeathMessage(ev.getEntity());
                 final MessageEmbed embed = ForgeMessageUtils.genItemStackEmbedIfAvailable(deathMessage);
@@ -293,15 +315,23 @@ public class DiscordIntegration {
 
     @SubscribeEvent
     public void playerLeave(PlayerEvent.PlayerLoggedOutEvent ev) {
-        if (stopped) return; //Try to fix player leave messages after stop!
-        if (discord_instance != null) {
-            if (PlayerLinkController.getSettings(null, ev.getEntity().getUUID()).hideFromDiscord) return;
-            if (!timeouts.contains(ev.getEntity().getUUID()))
+        if (stopped) {
+            return; //Try to fix player leave messages after stop!
+        }
+        if (discord_instance != null && notifications().playerLeave) {
+            if (PlayerLinkController.getSettings(null, ev.getEntity().getUUID()).hideFromDiscord) {
+                return;
+            }
+            if (!timeouts.contains(ev.getEntity().getUUID())) {
                 discord_instance.sendMessage(Localization.instance().playerLeave.replace("%player%", ForgeMessageUtils.formatPlayerName(ev.getEntity())));
-            else if (timeouts.contains(ev.getEntity().getUUID())) {
+            } else if (timeouts.contains(ev.getEntity().getUUID())) {
                 discord_instance.sendMessage(Localization.instance().playerTimeout.replace("%player%", ForgeMessageUtils.formatPlayerName(ev.getEntity())));
                 timeouts.remove(ev.getEntity().getUUID());
             }
         }
+    }
+
+    private static NotificationConfiguration notifications() {
+        return NotificationConfiguration.instance();
     }
 }
